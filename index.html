@@ -998,3 +998,117 @@ Object.assign(dictionaries.kok,{"General Medicine": "सामान्य व�
   const next=$('nextStep'),place=$('nextPlace'),date=$('visitDate');
   if(date&&!date.value){const d=new Date();date.value=[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');}
   if(journey==='first'||journey==='returning-new'||journey==='returning-followup-registration'){
+   if(next)next.value='Proceed to Registration';
+   if(place)place.value='Registration counter';
+  }else if(journey==='returning-followup-direct'){
+   if(next)next.value='Proceed to the Department / OPD';
+   if(place)place.value='Department / OPD';
+  }else{
+   if(next)next.value='Return to the Help Point for confirmation';
+   if(place)place.value='CarePath Help Point';
+  }
+  const chosen=$('journeyDepartment')?.value||'General Medicine';
+  if(service){service.value=chosen;service.dispatchEvent(new Event('change',{bubbles:true}));}
+  if(typeof window.updateCardPreview==='function')window.updateCardPreview();
+  const issued=window.carePathIssueVisitorToken?window.carePathIssueVisitorToken(chosen):{ok:false,reason:'not-ready'};
+  if(!issued.ok){
+   $('journeyResult').textContent=issued.reason==='already-issued'?'A token has already been issued for this visit. You cannot request another one here.':issued.reason==='unavailable'?`${issued.department} is currently marked unavailable. Please check with the Help Point.`:'The token service is not ready. Please ask the Help Point.';
+   $('journeyResult').hidden=false;return;
+  }
+  hideGate();
+  const target=$('myqueue');if(target)target.scrollIntoView({behavior:'smooth',block:'start'});
+ });
+ // Keep the department selector aligned with the published worker roster.
+ // The roster remains the single source for service names/statuses in this prototype.
+ const publish=$('staffPublishRoster');
+ if(publish)publish.addEventListener('click',()=>{
+  const rosterRows=[...document.querySelectorAll('#staffRoster tr')];
+  const options=rosterRows.map(row=>row.querySelector('td strong')?.textContent?.trim()).filter(Boolean);
+  const journeySelect=$('journeyDepartment');
+  if(journeySelect&&options.length){const currentJourney=journeySelect.value;journeySelect.innerHTML='';options.forEach(name=>{const o=document.createElement('option');o.value=name;o.textContent=name;journeySelect.appendChild(o);});if(options.includes(currentJourney))journeySelect.value=currentJourney;}
+  const select=$('visitService');
+  if(select&&options.length){
+   const current=select.value;
+   select.innerHTML='';
+   options.forEach(name=>{const o=document.createElement('option');o.value=name;o.textContent=name;select.appendChild(o);});
+   if(options.includes(current))select.value=current;
+   if(typeof window.updateCardPreview==='function')window.updateCardPreview();
+  }
+ });
+ // When a worker publishes, the already-existing roster publisher mirrors statuses/timings
+ // into the visitor cards and public roster in this same browser session.
+})();
+</script>
+
+<script>
+// Iteration 2 revised: department-specific queues; one visitor token after registration/check-in.
+(()=> {
+ const $=id=>document.getElementById(id);
+ if(!$('visitorQueueStatus')||!$('staffQueueDepartment'))return;
+ const deptNames=[['general','General Medicine'],['dental','Dental Care'],['paediatrics','Paediatrics'],['orthopaedics','Orthopaedics']];
+ const demoQueueSeed={general:{count:5,serving:2,estimate:6},dental:{count:4,serving:1,estimate:7},paediatrics:{count:6,serving:3,estimate:5},orthopaedics:{count:3,serving:1,estimate:6}};
+ const queues={};deptNames.forEach(([id,name])=>{const seed=demoQueueSeed[id],tokens=[];for(let n=1;n<=seed.count;n++){tokens.push({id:id+'-demo-'+n,number:n,source:'offline',status:n<seed.serving?'served':n===seed.serving?'serving':'waiting'});}queues[id]={id,name,next:seed.count+1,serving:seed.serving,offline:seed.count,online:0,served:seed.serving-1,estimate:seed.estimate,tokens,updatedAt:Date.now(),publishedAt:Date.now()};});
+ const $w=$('staffQueueDepartment');let selectedVisitorToken=null,issuedForCurrentJourney=false,updateInterval=15;
+ $w.innerHTML=deptNames.map(([id,n])=>`<option value="${id}">${n}</option>`).join('');
+ function deptIdFromName(name){const found=deptNames.find(([id,n])=>n===name);return found?found[0]:'general';}
+ function qFor(id){return queues[id]||queues.general;}
+ function activeAhead(q,token){return q.tokens.filter(t=>t.number<token&&t.status==='waiting').length;}
+ function fmtAge(ts){const mins=Math.max(0,Math.floor((Date.now()-ts)/60000));return mins<1?'just now':mins===1?'1 minute ago':mins+' minutes ago';}
+ function waitRange(q,number){const ahead=activeAhead(q,number);return {ahead,low:ahead*Math.max(1,q.estimate-1),high:ahead*(q.estimate+1)};}
+ function renderVisitor(){
+  const box=$('visitorQueueStatus'),panel=$('visitorTokenPanel');
+  if(!selectedVisitorToken){box.innerHTML='<strong>No token issued yet</strong><p>Complete the visitor registration/check-in steps to receive a token for your selected department.</p>';panel.hidden=true;return;}
+  const q=qFor(selectedVisitorToken.department),token=q.tokens.find(t=>t.id===selectedVisitorToken.id);
+  if(!token){panel.hidden=true;return;}
+  const waiting=q.tokens.filter(t=>t.status==='waiting').length;
+  box.innerHTML=`<strong>${q.name} queue</strong><p>${waiting} waiting · Current token being served: ${q.serving||'Not updated'}<br>Queue information updated ${fmtAge(q.updatedAt)}.</p>`;
+  panel.hidden=false;
+  if(token.status==='cancelled'){panel.innerHTML=`<p><strong>Token #${token.number} cancelled.</strong> This number will not be reused. To request another token, please speak to the CHC registration counter.</p>`;return;}
+  const est=waitRange(q,token.number),pos=token.status==='served'?0:token.status==='serving'?1:est.ahead+1;
+  panel.innerHTML=`<div class="queue-small">${q.name} · Today's token</div><div class="token-number">#${token.number}</div><div class="queue-muted">${token.status==='served'?'Served':token.status==='serving'?'Now being served':'Waiting'}</div>
+   <div class="token-metrics"><div class="token-metric"><strong>${pos||'—'}</strong><span>${token.status==='served'?'Status':'Queue position'}</span></div><div class="token-metric"><strong>${token.status==='served'?'—':est.ahead}</strong><span>People ahead</span></div><div class="token-metric"><strong>${token.status==='served'?'—':est.low+'–'+est.high+' min'}</strong><span>Indicative wait</span></div></div>
+   <p class="queue-small">Last updated ${fmtAge(q.updatedAt)}. Demo queue data is preloaded for demonstration. Waiting time is indicative, not a guarantee; please confirm with the department.</p>
+   ${token.status==='waiting'?'<div class="queue-actions"><button class="staff-btn secondary" id="cancelMyToken" type="button">Cancel Today’s Token</button></div>':''}`;
+  const cancel=$('cancelMyToken');if(cancel)cancel.addEventListener('click',()=>{token.status='cancelled';q.updatedAt=Date.now();q.publishedAt=Date.now();addQueueLog(`${q.name}: token #${token.number} cancelled by visitor.`);renderAll();});
+ }
+ function renderWorker(){
+  const q=qFor($w.value),waiting=q.tokens.filter(t=>t.status==='waiting').length;
+  $('staffQueueSummary').innerHTML=`<strong>${q.name}</strong><br>Next token: <b>#${q.next}</b> · Offline issued: <b>${q.offline}</b> · Online issued: <b>${q.online}</b> · Served: <b>${q.served}</b> · Waiting: <b>${waiting}</b><br>Current token being served: <b>${q.serving||'Not updated'}</b> · Last update: <b>${fmtAge(q.updatedAt)}</b>`;
+  $('currentServingToken').value=q.serving||0;$('minutesPerConsultation').value=String(q.estimate);
+ }
+ function addQueueLog(msg){const log=$('staffLog');if(!log)return;const item=document.createElement('div');item.className='log-item';item.textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+msg;log.prepend(item);}
+ function renderAll(){renderVisitor();renderWorker();}
+ function issueToken(department,source){
+  const q=qFor(department),token={id:department+'-'+q.next+'-'+Date.now(),number:q.next,source,status:'waiting'};
+  q.tokens.push(token);q.next++;if(source==='online')q.online++;else q.offline++;
+  q.updatedAt=Date.now();q.publishedAt=Date.now();
+  if(source==='online'){selectedVisitorToken={id:token.id,number:token.number,department};issuedForCurrentJourney=true;}
+  addQueueLog(`${q.name}: ${source} token #${token.number} issued.`);renderAll();return token;
+ }
+ window.carePathIssueVisitorToken=(departmentName)=>{
+  if(issuedForCurrentJourney||selectedVisitorToken)return {ok:false,reason:'already-issued'};
+  const id=deptIdFromName(departmentName),q=qFor(id),card=document.querySelector(`.service-card[data-id="${id}"]`);
+  if(card&&card.dataset.status==='unavailable')return {ok:false,reason:'unavailable',department:q.name};
+  return {ok:true,token:issueToken(id,'online'),department:q.name};
+ };
+ $('addOfflineTokens').addEventListener('click',()=>{const count=Math.max(0,Math.min(100,Number($('offlineTokenCount').value)||0));if(!count){$('offlineTokenCount').focus();return;}for(let i=0;i<count;i++)issueToken($w.value,'offline');$('offlineTokenCount').value=0;renderAll();});
+ $('saveServingToken').addEventListener('click',()=>{const q=qFor($w.value),n=Math.max(0,Number($('currentServingToken').value)||0);if(n>=q.next){addQueueLog('Serving token must be an issued number in this department.');return;}q.serving=n;q.tokens.forEach(t=>{if(n>0&&t.number<n&&t.status==='waiting')t.status='served';if(t.status==='serving'&&t.number!==n)t.status='served';if(t.number===n&&t.status==='waiting')t.status='serving';});q.served=q.tokens.filter(t=>t.status==='served').length;q.updatedAt=Date.now();q.publishedAt=Date.now();addQueueLog(`${q.name}: current serving token updated to ${n||'not set'}.`);renderAll();});
+ $('saveConsultationEstimate').addEventListener('click',()=>{const q=qFor($w.value);q.estimate=Number($('minutesPerConsultation').value)||6;q.updatedAt=Date.now();q.publishedAt=Date.now();addQueueLog(`${q.name}: indicative consultation estimate set to ${q.estimate} minutes.`);renderAll();});
+ $('publishQueueUpdate').addEventListener('click',()=>{updateInterval=Number($('queueUpdateInterval').value)||15;const q=qFor($w.value);q.updatedAt=Date.now();q.publishedAt=Date.now();addQueueLog(`${q.name}: queue snapshot published. Reminder interval set to ${updateInterval} minutes.`);renderAll();});
+ $w.addEventListener('change',renderWorker);renderAll();
+})();
+</script>
+
+
+<script>
+// Final iteration: independent dark-mode and high-contrast controls.
+(()=>{
+ const dark=document.getElementById('darkModeToggle');
+ const contrast=document.getElementById('contrastToggle');
+ if(dark)dark.addEventListener('click',()=>{const on=document.body.classList.toggle('dark-mode');dark.setAttribute('aria-pressed',String(on));dark.textContent=window.carePathTranslate?.(on?'Dark mode on':'Dark mode')|| (on?'Dark mode on':'Dark mode');});
+ if(contrast)contrast.addEventListener('click',()=>{const on=document.body.classList.toggle('high-contrast');contrast.setAttribute('aria-pressed',String(on));});
+ const flip=document.getElementById('flipCard');
+ if(flip){const base=flip.textContent;const observer=new MutationObserver(()=>{const hi=window.carePathLanguage==='hi',kok=window.carePathLanguage==='kok';const side=flip.getAttribute('aria-pressed')==='true'?'A':'B';flip.textContent=hi?`कार्ड पलटें · भाग ${side}`:kok?`कार्ड उलयात · बाजू ${side}`:`Flip card · Side ${side}`;});observer.observe(flip,{attributes:true,attributeFilter:['aria-pressed']});}
+})();
+</script>
+</body></html>
